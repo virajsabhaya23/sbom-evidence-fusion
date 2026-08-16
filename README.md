@@ -18,9 +18,7 @@ CycloneDX explicitly notes that components omitted from a dependency graph may h
 
 ## Install
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+python -m pip install https://github.com/virajsabhaya23/sbom-evidence-fusion/releases/download/v0.1.0/sbom_evidence_fusion-0.1.0-py3-none-any.whl
 ```
 
 ## Demo
