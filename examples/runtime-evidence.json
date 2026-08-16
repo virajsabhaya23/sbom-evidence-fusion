@@ -1,0 +1,9 @@
+{
+  "format": "sbom-fuse-evidence/v1",
+  "source_type": "runtime",
+  "components": [
+    {"name":"alpha","version":"1.0.0","purl":"pkg:npm/alpha@1.0.0"},
+    {"name":"beta","version":"2.0.0","purl":"pkg:npm/beta@2.0.0"}
+  ],
+  "edges": [{"parent":"pkg:npm/alpha@1.0.0","child":"pkg:npm/beta@2.0.0"}]
+}

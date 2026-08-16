@@ -1,0 +1,12 @@
+{
+  "spdxVersion":"SPDX-2.3","dataLicense":"CC0-1.0","SPDXID":"SPDXRef-DOCUMENT","name":"demo","documentNamespace":"https://example.invalid/demo",
+  "packages":[
+    {"SPDXID":"SPDXRef-App","name":"demo-app","versionInfo":"1.0.0","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/demo-app@1.0.0"}]},
+    {"SPDXID":"SPDXRef-Alpha","name":"alpha","versionInfo":"1.0.0","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/alpha@1.0.0"}]},
+    {"SPDXID":"SPDXRef-Beta","name":"beta","versionInfo":"2.0.0","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:npm/beta@2.0.0"}]}
+  ],
+  "relationships":[
+    {"spdxElementId":"SPDXRef-App","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-Alpha"},
+    {"spdxElementId":"SPDXRef-Alpha","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-Beta"}
+  ]
+}

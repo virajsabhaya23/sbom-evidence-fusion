@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbom-evidence-fusion"
+version = "0.1.0"
+description = "Evidence-backed SBOM dependency graph repair with provenance, confidence, and uncertainty-aware reachability"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{name = "Viraj Sabhaya"}]
+keywords = ["sbom", "cyclonedx", "spdx", "supply-chain", "security"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Security"
+]
+
+[project.urls]
+Homepage = "https://github.com/virajsabhaya23/sbom-evidence-fusion"
+Repository = "https://github.com/virajsabhaya23/sbom-evidence-fusion"
+Issues = "https://github.com/virajsabhaya23/sbom-evidence-fusion/issues"
+
+[project.scripts]
+sbom-fuse = "sbom_fuse.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.10"
