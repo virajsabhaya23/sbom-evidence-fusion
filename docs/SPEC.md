@@ -23,6 +23,12 @@ identifiers are retained as aliases. Opaque, non-PURL keys may be reused only
 for the same name/version pair; a conflicting reuse is an identity error, not
 permission to fuse the components.
 
+Strong artifact hashes (SHA-256/384/512) are material-identity evidence, not
+ordinary aliases. Matching hashes merge with per-source provenance. Different
+values for the same strong algorithm create an identity conflict and
+quarantine incident edges from repaired adjacency. Missing hashes do not imply
+a conflict; weak-only disagreement remains explicitly qualified evidence.
+
 ## Reachability safety
 `reachable` is always a positive-path claim. `unreachable` is emitted only when graph completeness is >= 0.85. Otherwise absence of a path is reported as `unknown` with a reason.
 

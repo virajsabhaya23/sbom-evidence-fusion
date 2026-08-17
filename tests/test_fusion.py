@@ -1,6 +1,7 @@
 import unittest
 from sbom_fuse.fusion import combine_confidence, fuse, graph_quality, reachability
 from sbom_fuse.model import SourceGraph
+from sbom_fuse.exporters import repaired_cyclonedx, repaired_spdx
 
 class FusionTests(unittest.TestCase):
     def test_confidence_combines_independent_sources(self):
@@ -41,5 +42,33 @@ class FusionTests(unittest.TestCase):
         decision=fuse([graph]).edges[edge]
         self.assertEqual(len(decision.evidence),2)
         self.assertEqual(decision.confidence,0.99)
+
+    def test_matching_strong_hashes_merge_with_provenance_and_round_trip(self):
+        digest="a"*64; key="pkg:npm/a@1"
+        a=SourceGraph("a","cyclonedx",components={key:{"name":"a","version":"1","artifact_hashes":[{"algorithm":"SHA-256","value":digest,"source_id":"a","source_type":"cyclonedx"}]}})
+        b=SourceGraph("b","spdx",components={key:{"name":"a","version":"1","artifact_hashes":[{"algorithm":"SHA-256","value":digest,"source_id":"b","source_type":"spdx"}]}})
+        result=fuse([a,b]); component=result.components[key]
+        self.assertEqual(component["material_identity"],"confirmed")
+        self.assertEqual({item["source_id"] for item in component["artifact_hashes"]},{"a","b"})
+        self.assertEqual(repaired_cyclonedx(result)["components"][0]["hashes"][0]["content"],digest)
+        self.assertEqual(repaired_spdx(result)["packages"][0]["checksums"][0]["checksumValue"],digest)
+
+    def test_conflicting_strong_hashes_quarantine_cross_source_edges(self):
+        key="pkg:npm/a@1"; child="pkg:npm/b@1"
+        a=SourceGraph("a","cyclonedx",components={key:{"artifact_hashes":[{"algorithm":"SHA-256","value":"a"*64,"source_id":"a","source_type":"cyclonedx"}]},child:{}},edges={(key,child)})
+        b=SourceGraph("b","spdx",components={key:{"artifact_hashes":[{"algorithm":"SHA-256","value":"b"*64,"source_id":"b","source_type":"spdx"}]},child:{}},edges={(key,child)})
+        result=fuse([a,b])
+        self.assertEqual(result.components[key]["material_identity"],"conflicted")
+        self.assertEqual(result.edges[(key,child)].state,"quarantined")
+        self.assertNotIn(child,result.adjacency.get(key,set()))
+        self.assertNotIn("hashes",repaired_cyclonedx(result)["components"][0])
+
+    def test_missing_or_weak_hashes_do_not_create_false_strong_conflict(self):
+        key="pkg:npm/a@1"
+        a=SourceGraph("a","cyclonedx",components={key:{"artifact_hashes":[{"algorithm":"SHA-256","value":"a"*64,"source_id":"a","source_type":"cyclonedx"}]}})
+        b=SourceGraph("b","spdx",components={key:{"weak_artifact_hashes":[{"algorithm":"MD5","value":"different","source_id":"b","source_type":"spdx"}]}})
+        result=fuse([a,b])
+        self.assertEqual(result.components[key]["material_identity"],"confirmed")
+        self.assertEqual(result.components[key]["artifact_hash_conflicts"],{})
 
 if __name__ == "__main__": unittest.main()

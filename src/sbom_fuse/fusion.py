@@ -104,7 +104,12 @@ def fuse(graphs: list[SourceGraph]) -> FusionResult:
         for item in items:
             source_weights[item.source_id] = max(source_weights.get(item.source_id, 0.0), item.weight)
         conf = combine_confidence(list(source_weights.values()))
-        decisions[edge] = EdgeDecision(edge[0], edge[1], conf, state_for(conf), items)
+        conflicted=[node for node in edge if components.get(node,{}).get("material_identity")=="conflicted"]
+        if conflicted:
+            decisions[edge]=EdgeDecision(edge[0],edge[1],conf,"quarantined",items,
+                "conflicting strong artifact hashes for " + ", ".join(conflicted))
+        else:
+            decisions[edge] = EdgeDecision(edge[0], edge[1], conf, state_for(conf), items)
     return FusionResult(components, decisions, source_summaries, roots)
 
 

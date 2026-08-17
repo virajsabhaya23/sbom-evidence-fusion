@@ -32,6 +32,14 @@ the case-sensitive `generic` type. Original PURLs, source references, and name
 spellings remain in `identity_aliases` for auditability. Invalid PURLs and
 ambiguous opaque-ID collisions fail closed instead of silently merging nodes.
 
+CycloneDX component hashes and SPDX package checksums are normalized with
+source provenance. SHA-256/384/512 evidence confirms material identity when it
+agrees. Conflicting values for the same strong algorithm mark the canonical
+component `conflicted` and quarantine every fused edge touching it. A missing
+hash is uncertainty, while weak/unsupported hashes are retained as qualified
+evidence and never create a false strong conflict. Non-conflicting strong
+hashes round-trip into repaired CycloneDX and SPDX documents.
+
 ## Demo
 ```bash
 sbom-fuse fuse examples/source-a.cdx.json examples/source-b.spdx.json examples/package-lock.json --out-dir demo-out

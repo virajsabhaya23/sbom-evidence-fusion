@@ -12,6 +12,27 @@ from .identity import (
 )
 from .model import SourceGraph
 
+_HASH_ALGORITHMS={
+    "SHA256":("SHA-256",64),"SHA-256":("SHA-256",64),
+    "SHA384":("SHA-384",96),"SHA-384":("SHA-384",96),
+    "SHA512":("SHA-512",128),"SHA-512":("SHA-512",128),
+}
+
+def _hash_evidence(entries, source_id: str, source_type: str, algorithm_key: str, value_key: str):
+    strong=[]; weak=[]
+    for entry in entries or []:
+        raw_algorithm=str(entry.get(algorithm_key,"")).upper().replace("_","-")
+        value=str(entry.get(value_key,"")).strip().lower()
+        normalized=_HASH_ALGORITHMS.get(raw_algorithm)
+        item={"algorithm":normalized[0] if normalized else raw_algorithm,"value":value,"source_id":source_id,"source_type":source_type}
+        if normalized:
+            if not re.fullmatch(rf"[0-9a-f]{{{normalized[1]}}}",value):
+                raise ValueError(f"{source_id}: invalid {normalized[0]} artifact hash")
+            strong.append(item)
+        elif raw_algorithm and value:
+            weak.append(item)
+    return strong,weak
+
 
 def _load(path: pathlib.Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
@@ -26,7 +47,8 @@ def parse_cyclonedx(path: pathlib.Path, source_id: str) -> SourceGraph:
         ref = comp.get("bom-ref") or comp.get("purl") or f"{comp.get('name','')}@{comp.get('version','')}"
         key = canonical_component(comp.get("name", "unknown"), comp.get("version", ""), comp.get("purl", ""), infer_ecosystem(comp.get("purl")))
         ref_to_key[ref] = key
-        register_component(graph.components, key, {"name": comp.get("name", ""), "version": comp.get("version", ""), "purl": comp.get("purl", ""), "source_ref": ref})
+        hashes,weak=_hash_evidence(comp.get("hashes"),source_id,"cyclonedx","alg","content")
+        register_component(graph.components, key, {"name": comp.get("name", ""), "version": comp.get("version", ""), "purl": comp.get("purl", ""), "source_ref": ref,"artifact_hashes":hashes,"weak_artifact_hashes":weak})
     root_ref = (data.get("metadata") or {}).get("component", {}).get("bom-ref")
     if root_ref and root_ref in ref_to_key:
         graph.roots.add(ref_to_key[root_ref])
@@ -59,7 +81,8 @@ def parse_spdx(path: pathlib.Path, source_id: str) -> SourceGraph:
         key = canonical_component(pkg.get("name", "unknown"), pkg.get("versionInfo", ""), purl)
         sid = pkg.get("SPDXID") or key
         id_to_key[sid] = key
-        register_component(graph.components, key, {"name": pkg.get("name", ""), "version": pkg.get("versionInfo", ""), "purl": purl, "source_ref": sid})
+        hashes,weak=_hash_evidence(pkg.get("checksums"),source_id,"spdx","algorithm","checksumValue")
+        register_component(graph.components, key, {"name": pkg.get("name", ""), "version": pkg.get("versionInfo", ""), "purl": purl, "source_ref": sid,"artifact_hashes":hashes,"weak_artifact_hashes":weak})
     for rel in data.get("relationships", []) or []:
         kind = str(rel.get("relationshipType", "")).upper()
         if kind in {"DEPENDS_ON", "DEPENDENCY_OF"}:

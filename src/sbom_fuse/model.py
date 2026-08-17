@@ -36,6 +36,7 @@ class EdgeDecision:
     confidence: float
     state: str
     evidence: list[EdgeEvidence] = field(default_factory=list)
+    quarantine_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +45,7 @@ class EdgeDecision:
             "confidence": round(self.confidence, 6),
             "state": self.state,
             "evidence": [asdict(e) for e in self.evidence],
+            "quarantine_reason": self.quarantine_reason,
         }
 
 
