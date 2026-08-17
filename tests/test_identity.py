@@ -1,5 +1,4 @@
-import pathlib
-import tomllib
+import importlib.metadata
 import unittest
 
 import sbom_fuse
@@ -75,9 +74,10 @@ class PurlIdentityTests(unittest.TestCase):
             register_component(components, "component-1", {"name": "beta", "version": "1"})
 
     def test_runtime_and_distribution_versions_match(self):
-        project = pathlib.Path(__file__).parents[1]
-        metadata = tomllib.loads((project / "pyproject.toml").read_text())
-        self.assertEqual(sbom_fuse.__version__, metadata["project"]["version"])
+        self.assertEqual(
+            sbom_fuse.__version__,
+            importlib.metadata.version("sbom-evidence-fusion"),
+        )
 
 
 if __name__ == "__main__":
