@@ -320,29 +320,36 @@ def parse_input(path: pathlib.Path, source_id: str, forced_type: str | None = No
         lower = path.name.lower()
         if lower == "poetry.lock":
             typ = "poetry-lock"
-        elif "maven-tree" in lower or lower.startswith("dependency-tree"):
-            typ = "maven-tree"
         else:
             try:
                 data = _load(path)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE") from exc
-            if isinstance(data, dict) and data.get("bomFormat") == "CycloneDX":
-                typ = "cyclonedx"
-            elif isinstance(data, dict) and "spdxVersion" in data:
-                typ = "spdx"
-            elif isinstance(data, dict) and "lockfileVersion" in data and "packages" in data:
-                typ = "npm-lock"
-            elif isinstance(data, dict) and "installed" in data and "pip_version" in data:
-                typ = "pip-inspect"
-            elif isinstance(data, (dict, list)) and (lower.startswith("pnpm") or "pnpm" in lower):
-                typ = "pnpm-tree"
-            elif isinstance(data, (dict, list)) and (lower.startswith("yarn") or "yarn" in lower):
-                typ = "yarn-tree"
-            elif isinstance(data, dict) and data.get("format") == "sbom-fuse-evidence/v1":
-                typ = "evidence-json"
+                if "maven-tree" in lower or lower.startswith("dependency-tree"):
+                    typ = "maven-tree"
+                else:
+                    raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE") from exc
             else:
-                raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE")
+                # Semantic JSON signatures take precedence over filenames. This
+                # prevents a valid SBOM/lock file with a Maven-looking name from
+                # being silently routed to the Maven text parser.
+                if isinstance(data, dict) and data.get("bomFormat") == "CycloneDX":
+                    typ = "cyclonedx"
+                elif isinstance(data, dict) and "spdxVersion" in data:
+                    typ = "spdx"
+                elif isinstance(data, dict) and "lockfileVersion" in data and "packages" in data:
+                    typ = "npm-lock"
+                elif isinstance(data, dict) and "installed" in data and "pip_version" in data:
+                    typ = "pip-inspect"
+                elif isinstance(data, dict) and data.get("format") == "sbom-fuse-evidence/v1":
+                    typ = "evidence-json"
+                elif isinstance(data, dict) and {"groupId", "artifactId", "version"} <= data.keys():
+                    typ = "maven-tree"
+                elif isinstance(data, (dict, list)) and (lower.startswith("pnpm") or "pnpm" in lower):
+                    typ = "pnpm-tree"
+                elif isinstance(data, (dict, list)) and (lower.startswith("yarn") or "yarn" in lower):
+                    typ = "yarn-tree"
+                else:
+                    raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE")
     parsers = {
         "cyclonedx": parse_cyclonedx, "spdx": parse_spdx, "npm-lock": parse_package_lock,
         "pip-inspect": parse_pip_inspect, "pnpm-tree": lambda p,s: parse_node_tree(p,s,"pnpm-resolution"),

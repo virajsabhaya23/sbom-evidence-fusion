@@ -1,5 +1,5 @@
 import json, pathlib, tempfile, unittest
-from sbom_fuse.parsers import parse_cyclonedx, parse_spdx, parse_package_lock
+from sbom_fuse.parsers import parse_cyclonedx, parse_spdx, parse_package_lock, parse_input
 
 class ParserTests(unittest.TestCase):
     def _write(self, obj):
@@ -22,6 +22,19 @@ class ParserTests(unittest.TestCase):
     def test_package_lock(self):
         p=self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{"":{"name":"app","version":"1","dependencies":{"left-pad":"1.3.0"}},"node_modules/left-pad":{"version":"1.3.0"}}})
         g=parse_package_lock(p,"x"); self.assertEqual(len(g.edges),1)
+
+    def test_json_signatures_override_maven_looking_filenames(self):
+        fixtures = [
+            ("maven-tree-cyclonedx.json", {"bomFormat":"CycloneDX","components":[],"dependencies":[]}, "cyclonedx"),
+            ("dependency-tree-spdx.json", {"spdxVersion":"SPDX-2.3","packages":[],"relationships":[]}, "spdx"),
+            ("dependency-tree-package-lock.json", {"name":"app","version":"1","lockfileVersion":3,"packages":{}}, "npm-lock"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            for filename, payload, expected_type in fixtures:
+                with self.subTest(filename=filename):
+                    path=pathlib.Path(td)/filename
+                    path.write_text(json.dumps(payload),encoding="utf-8")
+                    self.assertEqual(parse_input(path,"x").source_type,expected_type)
 
 class MultiEcosystemParserTests(unittest.TestCase):
     def _write(self, obj):
