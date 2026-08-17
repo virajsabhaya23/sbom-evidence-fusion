@@ -10,6 +10,11 @@ class ParserTests(unittest.TestCase):
         p=self._write({"bomFormat":"CycloneDX","components":[{"bom-ref":"a","name":"a","version":"1","purl":"pkg:npm/a@1"},{"bom-ref":"b","name":"b","version":"1","purl":"pkg:npm/b@1"}],"dependencies":[{"ref":"a","dependsOn":["b"]}]})
         g=parse_cyclonedx(p,"x"); self.assertIn(("pkg:npm/a@1","pkg:npm/b@1"),g.edges)
 
+    def test_cyclonedx_canonicalizes_unlisted_purl_dependency_refs(self):
+        p=self._write({"bomFormat":"CycloneDX","components":[],"dependencies":[{"ref":"pkg:generic/Acme/Widget@V1","dependsOn":["pkg:nuget/EnterpriseLibrary.Common@6.0.1304"]}]})
+        g=parse_cyclonedx(p,"x")
+        self.assertIn(("pkg:generic/Acme/Widget@V1","pkg:nuget/EnterpriseLibrary.Common@6.0.1304"),g.edges)
+
     def test_spdx(self):
         p=self._write({"spdxVersion":"SPDX-2.3","packages":[{"SPDXID":"SPDXRef-A","name":"a","versionInfo":"1"},{"SPDXID":"SPDXRef-B","name":"b","versionInfo":"1"}],"relationships":[{"spdxElementId":"SPDXRef-A","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-B"}]})
         g=parse_spdx(p,"x"); self.assertEqual(len(g.edges),1)
@@ -58,3 +63,9 @@ class EvidenceParserTests(unittest.TestCase):
         g=parse_evidence_json(p,"x")
         self.assertEqual(g.source_type,"runtime")
         self.assertEqual(len(g.edges),1)
+
+    def test_runtime_evidence_preserves_case_sensitive_purl_identity(self):
+        p=self._write({"format":"sbom-fuse-evidence/v1","source_type":"runtime","components":[],"edges":[{"parent":"pkg:generic/Acme/Widget@V1","child":"pkg:nuget/EnterpriseLibrary.Common@6.0.1304"}]})
+        from sbom_fuse.parsers import parse_evidence_json
+        g=parse_evidence_json(p,"x")
+        self.assertIn(("pkg:generic/Acme/Widget@V1","pkg:nuget/EnterpriseLibrary.Common@6.0.1304"),g.edges)

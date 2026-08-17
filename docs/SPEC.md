@@ -13,6 +13,16 @@ States:
 
 Every emitted repaired relationship remains traceable to the source IDs and locators that supported it.
 
+## Component identity
+
+PURLs are canonicalized according to ECMA-427 and registered package-type
+definitions through `packageurl-python`. Scheme/type and qualifier-key
+normalization does not imply that namespace, name, or version are globally
+case-insensitive. No whole-PURL case fold is permitted. Original source
+identifiers are retained as aliases. Opaque, non-PURL keys may be reused only
+for the same name/version pair; a conflicting reuse is an identity error, not
+permission to fuse the components.
+
 ## Reachability safety
 `reachable` is always a positive-path claim. `unreachable` is emitted only when graph completeness is >= 0.85. Otherwise absence of a path is reported as `unknown` with a reason.
 

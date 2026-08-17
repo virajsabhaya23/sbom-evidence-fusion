@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sbom-evidence-fusion"
-version = "0.1.1"
+version = "0.2.0"
 description = "Evidence-backed SBOM dependency graph repair with provenance, confidence, and uncertainty-aware reachability"
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = ["packageurl-python>=0.17.6,<0.18"]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{name = "Viraj Sabhaya"}]

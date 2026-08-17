@@ -12,9 +12,9 @@ class ComponentKey:
 
     @property
     def canonical(self) -> str:
-        if self.purl:
-            return self.purl.lower()
-        return f"{self.ecosystem}:{self.name.lower()}@{self.version}"
+        from .identity import canonical_component
+
+        return canonical_component(self.name, self.version, self.purl, self.ecosystem)
 
 
 @dataclass(frozen=True)

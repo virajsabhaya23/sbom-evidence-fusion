@@ -5,6 +5,7 @@ import pathlib
 import sys
 from .exporters import dump_json, evidence_report, repaired_cyclonedx, repaired_spdx, source_diff
 from .fusion import fuse, reachability
+from .identity import canonical_reference
 from .parsers import parse_input
 
 
@@ -57,7 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "inspect":
             print(json.dumps(evidence_report(result), indent=2))
         elif args.cmd == "reach":
-            verdict = reachability(result, args.source.lower(), args.target.lower())
+            verdict = reachability(
+                result,
+                canonical_reference(args.source),
+                canonical_reference(args.target),
+            )
             print(json.dumps(verdict, indent=2) if args.json else f"{verdict['verdict']} completeness={verdict['completeness']} path={' -> '.join(verdict.get('path', []))}")
             return 0 if verdict["verdict"] == "reachable" else (2 if verdict["verdict"] == "unknown" else 1)
         return 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from .identity import register_component
 from .model import EdgeDecision, EdgeEvidence, SourceGraph
 
 SOURCE_WEIGHTS = {
@@ -67,7 +68,8 @@ def fuse(graphs: list[SourceGraph]) -> FusionResult:
     roots: set[str] = set()
     source_summaries = []
     for graph in graphs:
-        components.update(graph.components)
+        for key, component in graph.components.items():
+            register_component(components, key, component)
         roots.update(graph.roots)
         q = graph_quality(graph)
         source_summaries.append({"source_id": graph.source_id, "source_type": graph.source_type, **q, **graph.metadata})

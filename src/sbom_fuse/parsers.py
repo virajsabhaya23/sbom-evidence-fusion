@@ -3,7 +3,12 @@ import json
 import pathlib
 import re
 from typing import Any
-from .identity import canonical_component, infer_ecosystem
+from .identity import (
+    canonical_component,
+    canonical_reference,
+    infer_ecosystem,
+    register_component,
+)
 from .model import SourceGraph
 
 
@@ -20,21 +25,22 @@ def parse_cyclonedx(path: pathlib.Path, source_id: str) -> SourceGraph:
         ref = comp.get("bom-ref") or comp.get("purl") or f"{comp.get('name','')}@{comp.get('version','')}"
         key = canonical_component(comp.get("name", "unknown"), comp.get("version", ""), comp.get("purl", ""), infer_ecosystem(comp.get("purl")))
         ref_to_key[ref] = key
-        graph.components[key] = {"name": comp.get("name", ""), "version": comp.get("version", ""), "purl": comp.get("purl", ""), "source_ref": ref}
+        register_component(graph.components, key, {"name": comp.get("name", ""), "version": comp.get("version", ""), "purl": comp.get("purl", ""), "source_ref": ref})
     root_ref = (data.get("metadata") or {}).get("component", {}).get("bom-ref")
     if root_ref and root_ref in ref_to_key:
         graph.roots.add(ref_to_key[root_ref])
     for dep in data.get("dependencies", []):
-        parent = ref_to_key.get(dep.get("ref"), dep.get("ref"))
+        raw_parent = dep.get("ref")
+        parent = ref_to_key.get(raw_parent, canonical_reference(raw_parent))
         if not parent:
             continue
         if parent not in graph.components:
-            graph.components[parent] = {"name": parent, "version": "", "purl": parent if str(parent).startswith("pkg:") else ""}
+            register_component(graph.components, parent, {"name": parent, "version": "", "purl": parent if str(parent).startswith("pkg:") else ""})
         for child_ref in dep.get("dependsOn", []) or []:
-            child = ref_to_key.get(child_ref, child_ref)
+            child = ref_to_key.get(child_ref, canonical_reference(child_ref))
             if child:
                 if child not in graph.components:
-                    graph.components[child] = {"name": child, "version": "", "purl": child if str(child).startswith("pkg:") else ""}
+                    register_component(graph.components, child, {"name": child, "version": "", "purl": child if str(child).startswith("pkg:") else ""})
                 graph.edges.add((parent, child))
     return graph
 
@@ -52,7 +58,7 @@ def parse_spdx(path: pathlib.Path, source_id: str) -> SourceGraph:
         key = canonical_component(pkg.get("name", "unknown"), pkg.get("versionInfo", ""), purl)
         sid = pkg.get("SPDXID") or key
         id_to_key[sid] = key
-        graph.components[key] = {"name": pkg.get("name", ""), "version": pkg.get("versionInfo", ""), "purl": purl, "source_ref": sid}
+        register_component(graph.components, key, {"name": pkg.get("name", ""), "version": pkg.get("versionInfo", ""), "purl": purl, "source_ref": sid})
     for rel in data.get("relationships", []) or []:
         kind = str(rel.get("relationshipType", "")).upper()
         if kind in {"DEPENDS_ON", "DEPENDENCY_OF"}:
@@ -79,7 +85,7 @@ def parse_package_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
             version = meta.get("version", "")
         key = canonical_component(name, version, ecosystem="npm")
         path_to_key[pkg_path] = key
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
     if "" in path_to_key:
         graph.roots.add(path_to_key[""])
     for pkg_path, meta in packages.items():
@@ -116,7 +122,7 @@ def parse_pip_inspect(path: pathlib.Path, source_id: str) -> SourceGraph:
         version = meta.get("version", "")
         key = canonical_component(name, version, ecosystem="pypi")
         name_to_key[name.lower()] = key
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
     for item in installed:
         meta = item.get("metadata") or {}
         parent = name_to_key.get(str(meta.get("name", "")).lower())
@@ -140,7 +146,7 @@ def parse_node_tree(path: pathlib.Path, source_id: str, source_type: str) -> Sou
         name = node.get("name") or node.get("package") or "unknown"
         version = node.get("version") or ""
         key = canonical_component(name, version, ecosystem="npm")
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
         if parent:
             graph.edges.add((parent, key))
         else:
@@ -186,7 +192,7 @@ def parse_poetry_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
     for name, version, _ in entries:
         key = canonical_component(name, version, ecosystem="pypi")
         name_to_key[name.lower()] = key
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
     for name, _, deps in entries:
         parent = name_to_key[name.lower()]
         for dep in deps:
@@ -204,8 +210,8 @@ def parse_maven_tree(path: pathlib.Path, source_id: str) -> SourceGraph:
         if not m: continue
         depth = len(m.group(1)) // 3
         group, artifact, _packaging, version = m.group(2), m.group(3), m.group(4), m.group(5)
-        key = f"pkg:maven/{group}/{artifact}@{version}".lower()
-        graph.components[key] = {"name": artifact, "version": version, "purl": key}
+        key = canonical_component(artifact, version, f"pkg:maven/{group}/{artifact}@{version}")
+        register_component(graph.components, key, {"name": artifact, "version": version, "purl": key})
         if depth == 0: graph.roots.add(key)
         elif depth - 1 in stack: graph.edges.add((stack[depth-1], key))
         stack[depth] = key
@@ -221,16 +227,15 @@ def parse_evidence_json(path: pathlib.Path, source_id: str, source_type: str = "
         raise ValueError("evidence-json source_type must be runtime or build-graph")
     graph = SourceGraph(source_id=source_id, source_type=actual_type, metadata={"path": str(path)})
     for comp in data.get("components", []):
-        key = comp.get("purl") or canonical_component(comp.get("name", "unknown"), comp.get("version", ""), ecosystem=comp.get("ecosystem", "generic"))
-        key = key.lower()
-        graph.components[key] = {"name": comp.get("name", key), "version": comp.get("version", ""), "purl": comp.get("purl", key if key.startswith("pkg:") else "")}
+        key = canonical_component(comp.get("name", "unknown"), comp.get("version", ""), comp.get("purl", ""), ecosystem=comp.get("ecosystem", "generic"))
+        register_component(graph.components, key, {"name": comp.get("name", key), "version": comp.get("version", ""), "purl": comp.get("purl", key if key.startswith("pkg:") else "")})
     for edge in data.get("edges", []):
-        parent = str(edge.get("parent", "")).lower(); child = str(edge.get("child", "")).lower()
+        parent = canonical_reference(edge.get("parent", "")); child = canonical_reference(edge.get("child", ""))
         if parent and child:
             graph.edges.add((parent, child))
-            graph.components.setdefault(parent, {"name": parent, "version": "", "purl": parent if parent.startswith("pkg:") else ""})
-            graph.components.setdefault(child, {"name": child, "version": "", "purl": child if child.startswith("pkg:") else ""})
-    for root in data.get("roots", []): graph.roots.add(str(root).lower())
+            register_component(graph.components, parent, {"name": parent, "version": "", "purl": parent if parent.startswith("pkg:") else ""})
+            register_component(graph.components, child, {"name": child, "version": "", "purl": child if child.startswith("pkg:") else ""})
+    for root in data.get("roots", []): graph.roots.add(canonical_reference(root))
     return graph
 
 def parse_input(path: pathlib.Path, source_id: str, forced_type: str | None = None) -> SourceGraph:
