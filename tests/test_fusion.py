@@ -26,4 +26,20 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(v["verdict"], "reachable")
         self.assertEqual(v["path"], ["a","b","c"])
 
+    def test_maven_reachability_respects_context(self):
+        edge=("pkg:maven/a/app@1","pkg:maven/a/helper@1")
+        graph=SourceGraph("maven","maven-resolution",components={edge[0]:{},edge[1]:{}},edges={edge},roots={edge[0]},edge_metadata={edge:[{"scope":"test","optional":False}]})
+        result=fuse([graph])
+        self.assertEqual(reachability(result,*edge,context="runtime")["verdict"],"unreachable")
+        self.assertEqual(reachability(result,*edge,context="test")["verdict"],"reachable")
+        self.assertEqual(result.edges[edge].evidence[0].relationship["scope"],"test")
+
+    def test_relationship_variants_do_not_inflate_source_confidence(self):
+        edge=("a","b")
+        graph=SourceGraph("maven","maven-resolution",components={"a":{},"b":{}},edges={edge},roots={"a"},
+                          edge_metadata={edge:[{"scope":"compile"},{"scope":"test"}]})
+        decision=fuse([graph]).edges[edge]
+        self.assertEqual(len(decision.evidence),2)
+        self.assertEqual(decision.confidence,0.99)
+
 if __name__ == "__main__": unittest.main()

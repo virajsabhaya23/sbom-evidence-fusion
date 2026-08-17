@@ -7,7 +7,7 @@
 CycloneDX explicitly notes that components omitted from a dependency graph may have **unknown dependencies**, not zero dependencies. Existing SBOM tools already aggregate or assemble documents; this project targets a narrower problem: reconcile dependency-edge evidence from independent sources, score relationship confidence, detect degenerate graphs, and keep reachability uncertainty visible.
 
 ## Implemented end-to-end flow
-1. Ingest CycloneDX JSON, SPDX JSON, npm `package-lock.json`, pnpm/yarn JSON dependency trees, `pip inspect` JSON, `poetry.lock`, Maven `dependency:tree` text, and generic runtime/build evidence JSON.
+1. Ingest CycloneDX JSON, SPDX JSON, npm `package-lock.json`, pnpm/yarn JSON dependency trees, `pip inspect` JSON, `poetry.lock`, Maven `dependency:tree` JSON or text, and generic runtime/build evidence JSON.
 2. Normalize component identity with the ECMA-427 reference implementation,
    registered type rules, and retained original aliases.
 3. Detect empty/degenerate dependency graphs per source.
@@ -43,8 +43,13 @@ Expected: the `alpha -> beta` relationship missing from the CycloneDX source is 
 ## Reachability
 ```bash
 sbom-fuse reach examples/source-a.cdx.json examples/source-b.spdx.json examples/package-lock.json \
-  --from pkg:npm/demo-app@1.0.0 --to pkg:npm/beta@2.0.0 --json
+  --from pkg:npm/demo-app@1.0.0 --to pkg:npm/beta@2.0.0 --context runtime --json
 ```
+
+For Maven evidence, `--context compile|runtime|test` filters relationships by
+their preserved Maven scope. JSON dependency-tree output is preferred; the
+text fallback preserves type, classifier, scope, optionality, and depth in the
+edge evidence ledger instead of flattening every relationship into runtime.
 
 ## Tests
 ```bash
@@ -81,7 +86,7 @@ This repository does **not** claim originality for SBOM aggregation, graph stora
 Those claims still require external validation and independent adoption before they can support any "major significance" argument.
 
 ## Current limitations
-- Reference implementation supports CycloneDX JSON, SPDX JSON, npm package-lock v2/v3, pnpm/yarn JSON dependency-tree exports, pip inspect JSON, Poetry lock files, and Maven dependency-tree text.
+- Reference implementation supports CycloneDX JSON, SPDX JSON, npm package-lock v2/v3, pnpm/yarn JSON dependency-tree exports, pip inspect JSON, Poetry lock files, and Maven dependency-tree JSON/text.
 - Raw pnpm/yarn lockfile YAML is intentionally not parsed without a YAML dependency; use their JSON resolution/list output as evidence.
 - Confidence weights are transparent defaults, not statistically calibrated probabilities.
 - Type-specific identity behavior follows package-url-python 0.17.x and the

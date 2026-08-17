@@ -3,6 +3,7 @@ import json
 import pathlib
 import re
 from typing import Any
+from urllib.parse import quote
 from .identity import (
     canonical_component,
     canonical_reference,
@@ -201,19 +202,94 @@ def parse_poetry_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
     return graph
 
 
+MAVEN_SCOPES = {"compile", "provided", "runtime", "test", "system", "import"}
+
+
+def _maven_key(group: str, artifact: str, version: str, packaging: str = "jar", classifier: str = "") -> str:
+    qualifiers = []
+    if classifier:
+        qualifiers.append("classifier=" + quote(classifier, safe=""))
+    if packaging and packaging != "jar":
+        qualifiers.append("type=" + quote(packaging, safe=""))
+    raw = f"pkg:maven/{quote(group, safe='.')}/{quote(artifact, safe='.-_~')}@{quote(version, safe='.-_~')}"
+    if qualifiers:
+        raw += "?" + "&".join(sorted(qualifiers))
+    return canonical_component(artifact, version, raw)
+
+
+def _register_maven_edge(graph: SourceGraph, parent: str, child: str, relationship: dict[str, Any]) -> None:
+    graph.edges.add((parent, child))
+    graph.edge_metadata.setdefault((parent, child), []).append(relationship)
+
+
+def _parse_maven_json(data: dict[str, Any], graph: SourceGraph) -> None:
+    def visit(node: dict[str, Any], parent: str | None = None, depth: int = 0) -> None:
+        group = str(node.get("groupId", ""))
+        artifact = str(node.get("artifactId", ""))
+        version = str(node.get("version", ""))
+        if not group or not artifact or not version:
+            raise ValueError("Maven dependency-tree JSON node requires groupId, artifactId, and version")
+        packaging = str(node.get("type") or "jar")
+        classifier = str(node.get("classifier") or "")
+        scope = str(node.get("scope") or ("compile" if depth else "")).lower()
+        optional = str(node.get("optional", "false")).lower() == "true"
+        key = _maven_key(group, artifact, version, packaging, classifier)
+        register_component(graph.components, key, {"name": artifact, "version": version, "purl": key, "group": group, "classifier": classifier, "packaging": packaging})
+        if parent is None:
+            graph.roots.add(key)
+        else:
+            _register_maven_edge(graph, parent, key, {"scope": scope, "optional": optional, "classifier": classifier, "type": packaging, "depth": depth})
+        for child in node.get("children") or []:
+            visit(child, key, depth + 1)
+    visit(data)
+
+
+def _parse_maven_coordinate(token: str) -> tuple[str, str, str, str, str, str]:
+    parts = token.split(":")
+    if len(parts) < 4:
+        raise ValueError(f"Invalid Maven coordinate {token!r}")
+    group, artifact, packaging = parts[:3]
+    classifier = ""
+    scope = ""
+    if len(parts) == 4:
+        version = parts[3]
+    elif len(parts) == 5 and parts[-1].lower() in MAVEN_SCOPES:
+        version, scope = parts[3], parts[4].lower()
+    elif len(parts) == 5:
+        classifier, version = parts[3], parts[4]
+    else:
+        classifier, version, scope = parts[3], parts[4], parts[5].lower()
+    return group, artifact, packaging, classifier, version, scope
+
+
 def parse_maven_tree(path: pathlib.Path, source_id: str) -> SourceGraph:
     graph = SourceGraph(source_id=source_id, source_type="maven-resolution", metadata={"path": str(path)})
+    text = path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and {"groupId", "artifactId", "version"} <= data.keys():
+        graph.metadata["maven_format"] = "dependency-tree-json"
+        _parse_maven_json(data, graph)
+        return graph
+
+    graph.metadata["maven_format"] = "dependency-tree-text"
     stack = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = re.sub(r"^\[INFO\]\s*", "", raw)
-        m = re.match(r"((?:[| ]{3})*)(?:[+\\]- )?([^: ]+):([^: ]+):([^: ]+):([^: ]+)(?::[^ ]+)?", line)
+        m = re.match(r"((?:[| ]{3})*)([+\\]- )?([^ ]+)", line)
         if not m: continue
-        depth = len(m.group(1)) // 3
-        group, artifact, _packaging, version = m.group(2), m.group(3), m.group(4), m.group(5)
-        key = canonical_component(artifact, version, f"pkg:maven/{group}/{artifact}@{version}")
-        register_component(graph.components, key, {"name": artifact, "version": version, "purl": key})
+        depth = len(m.group(1)) // 3 + (1 if m.group(2) else 0)
+        try:
+            group, artifact, packaging, classifier, version, scope = _parse_maven_coordinate(m.group(3))
+        except ValueError:
+            continue
+        optional = "(optional)" in line.lower()
+        key = _maven_key(group, artifact, version, packaging, classifier)
+        register_component(graph.components, key, {"name": artifact, "version": version, "purl": key, "group": group, "classifier": classifier, "packaging": packaging})
         if depth == 0: graph.roots.add(key)
-        elif depth - 1 in stack: graph.edges.add((stack[depth-1], key))
+        elif depth - 1 in stack: _register_maven_edge(graph, stack[depth-1], key, {"scope": scope or "compile", "optional": optional, "classifier": classifier, "type": packaging, "depth": depth})
         stack[depth] = key
         for d in list(stack):
             if d > depth: del stack[d]
@@ -244,7 +320,7 @@ def parse_input(path: pathlib.Path, source_id: str, forced_type: str | None = No
         lower = path.name.lower()
         if lower == "poetry.lock":
             typ = "poetry-lock"
-        elif lower.endswith("maven-tree.txt") or lower == "dependency-tree.txt":
+        elif "maven-tree" in lower or lower.startswith("dependency-tree"):
             typ = "maven-tree"
         else:
             try:

@@ -10,3 +10,6 @@ All notable changes will be documented here. This project follows Semantic Versi
   collisions.
 - Add adversarial case, qualifier, percent-encoding, ecosystem, and version
   parity tests.
+- Prefer Maven dependency-tree JSON and harden the text fallback so classifier,
+  type, scope, optionality, and depth survive as relationship evidence.
+- Add compile/runtime/test-aware reachability for Maven graphs.

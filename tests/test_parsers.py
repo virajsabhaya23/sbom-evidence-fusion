@@ -53,6 +53,30 @@ class MultiEcosystemParserTests(unittest.TestCase):
         from sbom_fuse.parsers import parse_maven_tree
         self.assertGreaterEqual(len(parse_maven_tree(pathlib.Path(f.name),"x").edges),1)
 
+    def test_maven_text_preserves_classifier_scope_and_optional(self):
+        f=tempfile.NamedTemporaryFile(mode="w", suffix="maven-tree.txt", delete=False)
+        f.write("[INFO] com.acme:app:jar:1.0\n[INFO] +- org.example:native:jar:linux-x86_64:2.0:runtime\n[INFO] \\- org.example:test-helper:jar:3.0:test (optional)\n")
+        f.close()
+        from sbom_fuse.parsers import parse_maven_tree
+        graph=parse_maven_tree(pathlib.Path(f.name),"x")
+        classified="pkg:maven/org.example/native@2.0?classifier=linux-x86_64"
+        root="pkg:maven/com.acme/app@1.0"
+        self.assertIn(classified,graph.components)
+        self.assertEqual(graph.components[classified]["version"],"2.0")
+        self.assertEqual(graph.edge_metadata[(root,classified)][0]["scope"],"runtime")
+        test_edge=next(edge for edge in graph.edges if edge[1].endswith("/test-helper@3.0"))
+        self.assertEqual(graph.edge_metadata[test_edge][0]["scope"],"test")
+        self.assertTrue(graph.edge_metadata[test_edge][0]["optional"])
+
+    def test_maven_dependency_tree_json_is_preferred(self):
+        path=self._write({"groupId":"com.acme","artifactId":"app","version":"1.0","type":"jar","children":[{"groupId":"org.example","artifactId":"api","version":"2.0","type":"jar","scope":"provided","optional":"false","children":[]}]})
+        from sbom_fuse.parsers import parse_maven_tree
+        graph=parse_maven_tree(path,"x")
+        edge=("pkg:maven/com.acme/app@1.0","pkg:maven/org.example/api@2.0")
+        self.assertIn(edge,graph.edges)
+        self.assertEqual(graph.edge_metadata[edge][0]["scope"],"provided")
+        self.assertEqual(graph.metadata["maven_format"],"dependency-tree-json")
+
 class EvidenceParserTests(unittest.TestCase):
     def _write(self, obj):
         f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)

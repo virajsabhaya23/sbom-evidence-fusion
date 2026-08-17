@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--from", dest="source", required=True)
     r.add_argument("--to", dest="target", required=True)
     r.add_argument("--json", action="store_true")
+    r.add_argument("--context", choices=("all", "compile", "runtime", "test"), default="all")
     r.add_argument("--type", action="append", default=[], metavar="PATH=TYPE")
     i = sub.add_parser("inspect", help="Inspect graph quality and evidence completeness")
     i.add_argument("inputs", nargs="+")
@@ -62,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                 result,
                 canonical_reference(args.source),
                 canonical_reference(args.target),
+                args.context,
             )
             print(json.dumps(verdict, indent=2) if args.json else f"{verdict['verdict']} completeness={verdict['completeness']} path={' -> '.join(verdict.get('path', []))}")
             return 0 if verdict["verdict"] == "reachable" else (2 if verdict["verdict"] == "unknown" else 1)
