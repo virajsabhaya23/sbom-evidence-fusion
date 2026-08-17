@@ -155,3 +155,4 @@ def _refresh_material_identity(component: dict[str,Any]) -> None:
     conflicts={algorithm:sorted(values) for algorithm,values in by_algorithm.items() if len(values)>1}
     component["material_identity"]="conflicted" if conflicts else "confirmed" if by_algorithm else "unverified"
     component["artifact_hash_conflicts"]=conflicts
+    component["weak_hash_policy"]="record-only-no-identity-conflict"

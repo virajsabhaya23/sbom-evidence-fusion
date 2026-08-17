@@ -70,5 +70,19 @@ class FusionTests(unittest.TestCase):
         result=fuse([a,b])
         self.assertEqual(result.components[key]["material_identity"],"confirmed")
         self.assertEqual(result.components[key]["artifact_hash_conflicts"],{})
+        self.assertEqual(result.components[key]["weak_hash_policy"],"record-only-no-identity-conflict")
+
+    def test_weak_hash_disagreement_is_recorded_but_never_confirms_or_conflicts_identity(self):
+        key="pkg:npm/a@1"
+        graphs=[
+            SourceGraph(source,"spdx",components={key:{"weak_artifact_hashes":[{
+                "algorithm":"MD5","value":value,"source_id":source,"source_type":"spdx"
+            }]}}) for source,value in (("a","1"*32),("b","2"*32))
+        ]
+        component=fuse(graphs).components[key]
+        self.assertEqual(component["material_identity"],"unverified")
+        self.assertEqual(component["artifact_hash_conflicts"],{})
+        self.assertEqual(component["weak_hash_policy"],"record-only-no-identity-conflict")
+        self.assertEqual({x["source_id"] for x in component["weak_artifact_hashes"]},{"a","b"})
 
 if __name__ == "__main__": unittest.main()
