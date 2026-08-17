@@ -5,6 +5,7 @@ import pathlib
 import sys
 from .exporters import dump_json, evidence_report, repaired_cyclonedx, repaired_spdx, source_diff
 from .fusion import fuse, reachability
+from .identity import canonical_reference
 from .parsers import parse_input
 
 
@@ -20,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--from", dest="source", required=True)
     r.add_argument("--to", dest="target", required=True)
     r.add_argument("--json", action="store_true")
+    r.add_argument("--context", choices=("all", "compile", "runtime", "test"), default="all")
     r.add_argument("--type", action="append", default=[], metavar="PATH=TYPE")
     i = sub.add_parser("inspect", help="Inspect graph quality and evidence completeness")
     i.add_argument("inputs", nargs="+")
@@ -57,7 +59,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "inspect":
             print(json.dumps(evidence_report(result), indent=2))
         elif args.cmd == "reach":
-            verdict = reachability(result, args.source.lower(), args.target.lower())
+            verdict = reachability(
+                result,
+                canonical_reference(args.source),
+                canonical_reference(args.target),
+                args.context,
+            )
             print(json.dumps(verdict, indent=2) if args.json else f"{verdict['verdict']} completeness={verdict['completeness']} path={' -> '.join(verdict.get('path', []))}")
             return 0 if verdict["verdict"] == "reachable" else (2 if verdict["verdict"] == "unknown" else 1)
         return 0

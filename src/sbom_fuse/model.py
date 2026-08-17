@@ -12,9 +12,9 @@ class ComponentKey:
 
     @property
     def canonical(self) -> str:
-        if self.purl:
-            return self.purl.lower()
-        return f"{self.ecosystem}:{self.name.lower()}@{self.version}"
+        from .identity import canonical_component
+
+        return canonical_component(self.name, self.version, self.purl, self.ecosystem)
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class EdgeEvidence:
     weight: float
     locator: str = ""
     note: str = ""
+    relationship: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,3 +55,5 @@ class SourceGraph:
     edges: set[tuple[str, str]] = field(default_factory=set)
     roots: set[str] = field(default_factory=set)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Appended to preserve the v0.1 positional constructor contract.
+    edge_metadata: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)

@@ -3,7 +3,13 @@ import json
 import pathlib
 import re
 from typing import Any
-from .identity import canonical_component, infer_ecosystem
+from urllib.parse import quote
+from .identity import (
+    canonical_component,
+    canonical_reference,
+    infer_ecosystem,
+    register_component,
+)
 from .model import SourceGraph
 
 
@@ -20,21 +26,22 @@ def parse_cyclonedx(path: pathlib.Path, source_id: str) -> SourceGraph:
         ref = comp.get("bom-ref") or comp.get("purl") or f"{comp.get('name','')}@{comp.get('version','')}"
         key = canonical_component(comp.get("name", "unknown"), comp.get("version", ""), comp.get("purl", ""), infer_ecosystem(comp.get("purl")))
         ref_to_key[ref] = key
-        graph.components[key] = {"name": comp.get("name", ""), "version": comp.get("version", ""), "purl": comp.get("purl", ""), "source_ref": ref}
+        register_component(graph.components, key, {"name": comp.get("name", ""), "version": comp.get("version", ""), "purl": comp.get("purl", ""), "source_ref": ref})
     root_ref = (data.get("metadata") or {}).get("component", {}).get("bom-ref")
     if root_ref and root_ref in ref_to_key:
         graph.roots.add(ref_to_key[root_ref])
     for dep in data.get("dependencies", []):
-        parent = ref_to_key.get(dep.get("ref"), dep.get("ref"))
+        raw_parent = dep.get("ref")
+        parent = ref_to_key.get(raw_parent, canonical_reference(raw_parent))
         if not parent:
             continue
         if parent not in graph.components:
-            graph.components[parent] = {"name": parent, "version": "", "purl": parent if str(parent).startswith("pkg:") else ""}
+            register_component(graph.components, parent, {"name": parent, "version": "", "purl": parent if str(parent).startswith("pkg:") else ""})
         for child_ref in dep.get("dependsOn", []) or []:
-            child = ref_to_key.get(child_ref, child_ref)
+            child = ref_to_key.get(child_ref, canonical_reference(child_ref))
             if child:
                 if child not in graph.components:
-                    graph.components[child] = {"name": child, "version": "", "purl": child if str(child).startswith("pkg:") else ""}
+                    register_component(graph.components, child, {"name": child, "version": "", "purl": child if str(child).startswith("pkg:") else ""})
                 graph.edges.add((parent, child))
     return graph
 
@@ -52,7 +59,7 @@ def parse_spdx(path: pathlib.Path, source_id: str) -> SourceGraph:
         key = canonical_component(pkg.get("name", "unknown"), pkg.get("versionInfo", ""), purl)
         sid = pkg.get("SPDXID") or key
         id_to_key[sid] = key
-        graph.components[key] = {"name": pkg.get("name", ""), "version": pkg.get("versionInfo", ""), "purl": purl, "source_ref": sid}
+        register_component(graph.components, key, {"name": pkg.get("name", ""), "version": pkg.get("versionInfo", ""), "purl": purl, "source_ref": sid})
     for rel in data.get("relationships", []) or []:
         kind = str(rel.get("relationshipType", "")).upper()
         if kind in {"DEPENDS_ON", "DEPENDENCY_OF"}:
@@ -79,7 +86,7 @@ def parse_package_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
             version = meta.get("version", "")
         key = canonical_component(name, version, ecosystem="npm")
         path_to_key[pkg_path] = key
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
     if "" in path_to_key:
         graph.roots.add(path_to_key[""])
     for pkg_path, meta in packages.items():
@@ -116,7 +123,7 @@ def parse_pip_inspect(path: pathlib.Path, source_id: str) -> SourceGraph:
         version = meta.get("version", "")
         key = canonical_component(name, version, ecosystem="pypi")
         name_to_key[name.lower()] = key
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
     for item in installed:
         meta = item.get("metadata") or {}
         parent = name_to_key.get(str(meta.get("name", "")).lower())
@@ -140,7 +147,7 @@ def parse_node_tree(path: pathlib.Path, source_id: str, source_type: str) -> Sou
         name = node.get("name") or node.get("package") or "unknown"
         version = node.get("version") or ""
         key = canonical_component(name, version, ecosystem="npm")
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
         if parent:
             graph.edges.add((parent, key))
         else:
@@ -186,7 +193,7 @@ def parse_poetry_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
     for name, version, _ in entries:
         key = canonical_component(name, version, ecosystem="pypi")
         name_to_key[name.lower()] = key
-        graph.components[key] = {"name": name, "version": version, "purl": key}
+        register_component(graph.components, key, {"name": name, "version": version, "purl": key})
     for name, _, deps in entries:
         parent = name_to_key[name.lower()]
         for dep in deps:
@@ -195,19 +202,94 @@ def parse_poetry_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
     return graph
 
 
+MAVEN_SCOPES = {"compile", "provided", "runtime", "test", "system", "import"}
+
+
+def _maven_key(group: str, artifact: str, version: str, packaging: str = "jar", classifier: str = "") -> str:
+    qualifiers = []
+    if classifier:
+        qualifiers.append("classifier=" + quote(classifier, safe=""))
+    if packaging and packaging != "jar":
+        qualifiers.append("type=" + quote(packaging, safe=""))
+    raw = f"pkg:maven/{quote(group, safe='.')}/{quote(artifact, safe='.-_~')}@{quote(version, safe='.-_~')}"
+    if qualifiers:
+        raw += "?" + "&".join(sorted(qualifiers))
+    return canonical_component(artifact, version, raw)
+
+
+def _register_maven_edge(graph: SourceGraph, parent: str, child: str, relationship: dict[str, Any]) -> None:
+    graph.edges.add((parent, child))
+    graph.edge_metadata.setdefault((parent, child), []).append(relationship)
+
+
+def _parse_maven_json(data: dict[str, Any], graph: SourceGraph) -> None:
+    def visit(node: dict[str, Any], parent: str | None = None, depth: int = 0) -> None:
+        group = str(node.get("groupId", ""))
+        artifact = str(node.get("artifactId", ""))
+        version = str(node.get("version", ""))
+        if not group or not artifact or not version:
+            raise ValueError("Maven dependency-tree JSON node requires groupId, artifactId, and version")
+        packaging = str(node.get("type") or "jar")
+        classifier = str(node.get("classifier") or "")
+        scope = str(node.get("scope") or ("compile" if depth else "")).lower()
+        optional = str(node.get("optional", "false")).lower() == "true"
+        key = _maven_key(group, artifact, version, packaging, classifier)
+        register_component(graph.components, key, {"name": artifact, "version": version, "purl": key, "group": group, "classifier": classifier, "packaging": packaging})
+        if parent is None:
+            graph.roots.add(key)
+        else:
+            _register_maven_edge(graph, parent, key, {"scope": scope, "optional": optional, "classifier": classifier, "type": packaging, "depth": depth})
+        for child in node.get("children") or []:
+            visit(child, key, depth + 1)
+    visit(data)
+
+
+def _parse_maven_coordinate(token: str) -> tuple[str, str, str, str, str, str]:
+    parts = token.split(":")
+    if len(parts) < 4:
+        raise ValueError(f"Invalid Maven coordinate {token!r}")
+    group, artifact, packaging = parts[:3]
+    classifier = ""
+    scope = ""
+    if len(parts) == 4:
+        version = parts[3]
+    elif len(parts) == 5 and parts[-1].lower() in MAVEN_SCOPES:
+        version, scope = parts[3], parts[4].lower()
+    elif len(parts) == 5:
+        classifier, version = parts[3], parts[4]
+    else:
+        classifier, version, scope = parts[3], parts[4], parts[5].lower()
+    return group, artifact, packaging, classifier, version, scope
+
+
 def parse_maven_tree(path: pathlib.Path, source_id: str) -> SourceGraph:
     graph = SourceGraph(source_id=source_id, source_type="maven-resolution", metadata={"path": str(path)})
+    text = path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and {"groupId", "artifactId", "version"} <= data.keys():
+        graph.metadata["maven_format"] = "dependency-tree-json"
+        _parse_maven_json(data, graph)
+        return graph
+
+    graph.metadata["maven_format"] = "dependency-tree-text"
     stack = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = re.sub(r"^\[INFO\]\s*", "", raw)
-        m = re.match(r"((?:[| ]{3})*)(?:[+\\]- )?([^: ]+):([^: ]+):([^: ]+):([^: ]+)(?::[^ ]+)?", line)
+        m = re.match(r"((?:[| ]{3})*)([+\\]- )?([^ ]+)", line)
         if not m: continue
-        depth = len(m.group(1)) // 3
-        group, artifact, _packaging, version = m.group(2), m.group(3), m.group(4), m.group(5)
-        key = f"pkg:maven/{group}/{artifact}@{version}".lower()
-        graph.components[key] = {"name": artifact, "version": version, "purl": key}
+        depth = len(m.group(1)) // 3 + (1 if m.group(2) else 0)
+        try:
+            group, artifact, packaging, classifier, version, scope = _parse_maven_coordinate(m.group(3))
+        except ValueError:
+            continue
+        optional = "(optional)" in line.lower()
+        key = _maven_key(group, artifact, version, packaging, classifier)
+        register_component(graph.components, key, {"name": artifact, "version": version, "purl": key, "group": group, "classifier": classifier, "packaging": packaging})
         if depth == 0: graph.roots.add(key)
-        elif depth - 1 in stack: graph.edges.add((stack[depth-1], key))
+        elif depth - 1 in stack: _register_maven_edge(graph, stack[depth-1], key, {"scope": scope or "compile", "optional": optional, "classifier": classifier, "type": packaging, "depth": depth})
         stack[depth] = key
         for d in list(stack):
             if d > depth: del stack[d]
@@ -221,16 +303,15 @@ def parse_evidence_json(path: pathlib.Path, source_id: str, source_type: str = "
         raise ValueError("evidence-json source_type must be runtime or build-graph")
     graph = SourceGraph(source_id=source_id, source_type=actual_type, metadata={"path": str(path)})
     for comp in data.get("components", []):
-        key = comp.get("purl") or canonical_component(comp.get("name", "unknown"), comp.get("version", ""), ecosystem=comp.get("ecosystem", "generic"))
-        key = key.lower()
-        graph.components[key] = {"name": comp.get("name", key), "version": comp.get("version", ""), "purl": comp.get("purl", key if key.startswith("pkg:") else "")}
+        key = canonical_component(comp.get("name", "unknown"), comp.get("version", ""), comp.get("purl", ""), ecosystem=comp.get("ecosystem", "generic"))
+        register_component(graph.components, key, {"name": comp.get("name", key), "version": comp.get("version", ""), "purl": comp.get("purl", key if key.startswith("pkg:") else "")})
     for edge in data.get("edges", []):
-        parent = str(edge.get("parent", "")).lower(); child = str(edge.get("child", "")).lower()
+        parent = canonical_reference(edge.get("parent", "")); child = canonical_reference(edge.get("child", ""))
         if parent and child:
             graph.edges.add((parent, child))
-            graph.components.setdefault(parent, {"name": parent, "version": "", "purl": parent if parent.startswith("pkg:") else ""})
-            graph.components.setdefault(child, {"name": child, "version": "", "purl": child if child.startswith("pkg:") else ""})
-    for root in data.get("roots", []): graph.roots.add(str(root).lower())
+            register_component(graph.components, parent, {"name": parent, "version": "", "purl": parent if parent.startswith("pkg:") else ""})
+            register_component(graph.components, child, {"name": child, "version": "", "purl": child if child.startswith("pkg:") else ""})
+    for root in data.get("roots", []): graph.roots.add(canonical_reference(root))
     return graph
 
 def parse_input(path: pathlib.Path, source_id: str, forced_type: str | None = None) -> SourceGraph:
@@ -239,29 +320,36 @@ def parse_input(path: pathlib.Path, source_id: str, forced_type: str | None = No
         lower = path.name.lower()
         if lower == "poetry.lock":
             typ = "poetry-lock"
-        elif lower.endswith("maven-tree.txt") or lower == "dependency-tree.txt":
-            typ = "maven-tree"
         else:
             try:
                 data = _load(path)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE") from exc
-            if isinstance(data, dict) and data.get("bomFormat") == "CycloneDX":
-                typ = "cyclonedx"
-            elif isinstance(data, dict) and "spdxVersion" in data:
-                typ = "spdx"
-            elif isinstance(data, dict) and "lockfileVersion" in data and "packages" in data:
-                typ = "npm-lock"
-            elif isinstance(data, dict) and "installed" in data and "pip_version" in data:
-                typ = "pip-inspect"
-            elif isinstance(data, (dict, list)) and (lower.startswith("pnpm") or "pnpm" in lower):
-                typ = "pnpm-tree"
-            elif isinstance(data, (dict, list)) and (lower.startswith("yarn") or "yarn" in lower):
-                typ = "yarn-tree"
-            elif isinstance(data, dict) and data.get("format") == "sbom-fuse-evidence/v1":
-                typ = "evidence-json"
+                if "maven-tree" in lower or lower.startswith("dependency-tree"):
+                    typ = "maven-tree"
+                else:
+                    raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE") from exc
             else:
-                raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE")
+                # Semantic JSON signatures take precedence over filenames. This
+                # prevents a valid SBOM/lock file with a Maven-looking name from
+                # being silently routed to the Maven text parser.
+                if isinstance(data, dict) and data.get("bomFormat") == "CycloneDX":
+                    typ = "cyclonedx"
+                elif isinstance(data, dict) and "spdxVersion" in data:
+                    typ = "spdx"
+                elif isinstance(data, dict) and "lockfileVersion" in data and "packages" in data:
+                    typ = "npm-lock"
+                elif isinstance(data, dict) and "installed" in data and "pip_version" in data:
+                    typ = "pip-inspect"
+                elif isinstance(data, dict) and data.get("format") == "sbom-fuse-evidence/v1":
+                    typ = "evidence-json"
+                elif isinstance(data, dict) and {"groupId", "artifactId", "version"} <= data.keys():
+                    typ = "maven-tree"
+                elif isinstance(data, (dict, list)) and (lower.startswith("pnpm") or "pnpm" in lower):
+                    typ = "pnpm-tree"
+                elif isinstance(data, (dict, list)) and (lower.startswith("yarn") or "yarn" in lower):
+                    typ = "yarn-tree"
+                else:
+                    raise ValueError(f"Unable to detect input type for {path}; use --type path=TYPE")
     parsers = {
         "cyclonedx": parse_cyclonedx, "spdx": parse_spdx, "npm-lock": parse_package_lock,
         "pip-inspect": parse_pip_inspect, "pnpm-tree": lambda p,s: parse_node_tree(p,s,"pnpm-resolution"),

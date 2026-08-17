@@ -1,6 +1,7 @@
 from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from .identity import register_component
 from .model import EdgeDecision, EdgeEvidence, SourceGraph
 
 SOURCE_WEIGHTS = {
@@ -54,11 +55,29 @@ class FusionResult:
 
     @property
     def adjacency(self) -> dict[str, set[str]]:
+        return self.adjacency_for("all")
+
+    def adjacency_for(self, context: str) -> dict[str, set[str]]:
+        if context not in {"all", "compile", "runtime", "test"}:
+            raise ValueError("context must be all, compile, runtime, or test")
         out: dict[str, set[str]] = defaultdict(set)
         for (a, b), decision in self.edges.items():
-            if decision.state in {"confirmed", "probable"}:
+            eligible = context == "all" or any(_evidence_in_context(item, context) for item in decision.evidence)
+            if decision.state in {"confirmed", "probable"} and eligible:
                 out[a].add(b)
         return out
+
+
+def _evidence_in_context(item: EdgeEvidence, context: str) -> bool:
+    if item.source_type != "maven-resolution" or not item.relationship.get("scope"):
+        return True
+    scope = item.relationship["scope"]
+    allowed = {
+        "compile": {"compile", "provided", "system"},
+        "runtime": {"compile", "runtime"},
+        "test": {"compile", "provided", "runtime", "system", "test"},
+    }
+    return scope in allowed[context]
 
 
 def fuse(graphs: list[SourceGraph]) -> FusionResult:
@@ -67,16 +86,24 @@ def fuse(graphs: list[SourceGraph]) -> FusionResult:
     roots: set[str] = set()
     source_summaries = []
     for graph in graphs:
-        components.update(graph.components)
+        for key, component in graph.components.items():
+            register_component(components, key, component)
         roots.update(graph.roots)
         q = graph_quality(graph)
         source_summaries.append({"source_id": graph.source_id, "source_type": graph.source_type, **q, **graph.metadata})
         weight = SOURCE_WEIGHTS.get(graph.source_type, 0.70)
         for parent, child in graph.edges:
-            evidence[(parent, child)].append(EdgeEvidence(graph.source_id, graph.source_type, parent, child, weight, graph.metadata.get("path", "")))
+            relationships = graph.edge_metadata.get((parent, child)) or [{}]
+            for relationship in relationships:
+                evidence[(parent, child)].append(EdgeEvidence(graph.source_id, graph.source_type, parent, child, weight, graph.metadata.get("path", ""), relationship=relationship))
     decisions: dict[tuple[str, str], EdgeDecision] = {}
     for edge, items in evidence.items():
-        conf = combine_confidence([i.weight for i in items])
+        # Multiple relationship variants from one source are useful semantic
+        # evidence, but are not independent confidence observations.
+        source_weights: dict[str, float] = {}
+        for item in items:
+            source_weights[item.source_id] = max(source_weights.get(item.source_id, 0.0), item.weight)
+        conf = combine_confidence(list(source_weights.values()))
         decisions[edge] = EdgeDecision(edge[0], edge[1], conf, state_for(conf), items)
     return FusionResult(components, decisions, source_summaries, roots)
 
@@ -92,18 +119,18 @@ def overall_completeness(result: FusionResult) -> float:
     return round(0.45 * structural + 0.25 * source_factor + 0.30 * auth_factor, 6)
 
 
-def reachability(result: FusionResult, source: str, target: str) -> dict:
-    adj = result.adjacency
+def reachability(result: FusionResult, source: str, target: str, context: str = "all") -> dict:
+    adj = result.adjacency_for(context)
     q = deque([(source, [source])])
     visited = {source}
     while q:
         node, path = q.popleft()
         if node == target:
-            return {"verdict": "reachable", "path": path, "completeness": overall_completeness(result)}
+            return {"verdict": "reachable", "path": path, "context": context, "completeness": overall_completeness(result)}
         for nxt in sorted(adj.get(node, ())):
             if nxt not in visited:
                 visited.add(nxt); q.append((nxt, path + [nxt]))
     completeness = overall_completeness(result)
     if completeness >= 0.85:
-        return {"verdict": "unreachable", "path": [], "completeness": completeness}
-    return {"verdict": "unknown", "path": [], "completeness": completeness, "reason": "Insufficient dependency evidence for a safe closed-world unreachable conclusion."}
+        return {"verdict": "unreachable", "path": [], "context": context, "completeness": completeness}
+    return {"verdict": "unknown", "path": [], "context": context, "completeness": completeness, "reason": "Insufficient dependency evidence for a safe closed-world unreachable conclusion."}
