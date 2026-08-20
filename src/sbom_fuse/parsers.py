@@ -145,9 +145,12 @@ def parse_package_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
             for dep_name in (meta.get(section) or {}):
                 child_path = _npm_resolve(path_to_key, pkg_path, dep_name)
                 if child_path is None:
-                    # An omitted optional/peer dependency is a legitimate resolution
-                    # outcome, not a missing edge to repair.
-                    if role in {"runtime", "development"}:
+                    # Omitted optional dependencies and optional peers are legitimate
+                    # resolution outcomes; required peers leave adjacency incomplete.
+                    peer_meta = (meta.get("peerDependenciesMeta") or {}).get(dep_name) or {}
+                    if role in {"runtime", "development"} or (
+                        role == "peer" and not peer_meta.get("optional", False)
+                    ):
                         graph.incomplete_adjacency.add(parent)
                     continue
                 child_meta = packages.get(child_path, {})
