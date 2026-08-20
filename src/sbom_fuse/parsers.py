@@ -147,6 +147,8 @@ def parse_package_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
                 if child_path is None:
                     # An omitted optional/peer dependency is a legitimate resolution
                     # outcome, not a missing edge to repair.
+                    if role in {"runtime", "development"}:
+                        graph.incomplete_adjacency.add(parent)
                     continue
                 child_meta = packages.get(child_path, {})
                 effective = role

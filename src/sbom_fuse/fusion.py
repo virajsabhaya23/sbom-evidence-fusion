@@ -52,6 +52,7 @@ class FusionResult:
     edges: dict[tuple[str, str], EdgeDecision]
     sources: list[dict]
     roots: set[str]
+    incomplete_adjacency: set[str]
 
     @property
     def adjacency(self) -> dict[str, set[str]]:
@@ -96,11 +97,13 @@ def fuse(graphs: list[SourceGraph]) -> FusionResult:
     components: dict[str, dict] = {}
     evidence: dict[tuple[str, str], list[EdgeEvidence]] = defaultdict(list)
     roots: set[str] = set()
+    incomplete_adjacency: set[str] = set()
     source_summaries = []
     for graph in graphs:
         for key, component in graph.components.items():
             register_component(components, key, component)
         roots.update(graph.roots)
+        incomplete_adjacency.update(graph.incomplete_adjacency)
         q = graph_quality(graph)
         source_summaries.append({"source_id": graph.source_id, "source_type": graph.source_type, **q, **graph.metadata})
         weight = SOURCE_WEIGHTS.get(graph.source_type, 0.70)
@@ -122,7 +125,7 @@ def fuse(graphs: list[SourceGraph]) -> FusionResult:
                 "conflicting strong artifact hashes for " + ", ".join(conflicted))
         else:
             decisions[edge] = EdgeDecision(edge[0], edge[1], conf, state_for(conf), items)
-    return FusionResult(components, decisions, source_summaries, roots)
+    return FusionResult(components, decisions, source_summaries, roots, incomplete_adjacency)
 
 
 AUTHORITATIVE_SOURCES = {"npm-lock", "pnpm-resolution", "yarn-resolution", "pip-resolution",
@@ -169,13 +172,14 @@ def closure_certificate(result: FusionResult, source: str, context: str = "all")
     visited, frontier, opaque = {source}, [source], []
     while frontier:
         node = frontier.pop()
-        if node not in declared and node not in enumerated:
+        if node in result.incomplete_adjacency or (node not in declared and node not in enumerated):
             opaque.append(node)
         for nxt in adj.get(node, ()):
             if nxt not in visited:
                 visited.add(nxt); frontier.append(nxt)
     return {"source": source, "context": context, "visited": sorted(visited),
-            "opaque_nodes": sorted(opaque), "closed": not opaque}
+            "opaque_nodes": sorted(opaque), "closed": not opaque,
+            "incomplete_adjacency": sorted(result.incomplete_adjacency & visited)}
 
 
 def reachability(result: FusionResult, source: str, target: str, context: str = "all") -> dict:

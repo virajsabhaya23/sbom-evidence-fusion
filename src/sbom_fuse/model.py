@@ -59,3 +59,6 @@ class SourceGraph:
     metadata: dict[str, Any] = field(default_factory=dict)
     # Appended to preserve the v0.1 positional constructor contract.
     edge_metadata: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    # Parents for which an authoritative source declared at least one required
+    # dependency that it could not resolve to a component.
+    incomplete_adjacency: set[str] = field(default_factory=set)

@@ -53,6 +53,17 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(verdict["closure"]["opaque_nodes"], [])
         self.assertEqual(verdict["closure"]["visited"], ["child", "queried"])
 
+    def test_incomplete_authoritative_adjacency_refuses_unreachable(self):
+        graph = self._dense_unrelated(
+            {"queried": {}, "resolved": {}, "vuln": {}},
+            {("queried", "resolved")},
+        )
+        graph.incomplete_adjacency.add("queried")
+        verdict = reachability(fuse([graph]), "queried", "vuln")
+        self.assertEqual(verdict["verdict"], "unknown")
+        self.assertIn("queried", verdict["closure"]["opaque_nodes"])
+        self.assertEqual(verdict["closure"]["incomplete_adjacency"], ["queried"])
+
     def test_an_opaque_intermediate_blocks_a_negative_verdict(self):
         graph = self._dense_unrelated({"queried": {}, "mid": {}, "vuln": {}}, {("queried", "mid")})
         sbom = SourceGraph("cdx", "cyclonedx", components={"mid": {}, "loose": {}}, edges={("mid", "loose")})
