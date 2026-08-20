@@ -27,6 +27,9 @@ def repaired_cyclonedx(result: FusionResult) -> dict:
         comp = {"type": "library", "bom-ref": key, "name": meta.get("name") or key, "version": meta.get("version") or ""}
         if key.startswith("pkg:"):
             comp["purl"] = key
+        if meta.get("material_identity")!="conflicted":
+            hashes={item["algorithm"]:item["value"] for item in meta.get("artifact_hashes",[])}
+            if hashes: comp["hashes"]=[{"alg":algorithm,"content":value} for algorithm,value in sorted(hashes.items())]
         components.append(comp)
     deps = []
     by_parent: dict[str, list[str]] = {}
@@ -58,6 +61,10 @@ def repaired_spdx(result: FusionResult) -> dict:
         pkg = {"SPDXID": sid, "name": meta.get("name") or key, "versionInfo": meta.get("version") or "NOASSERTION", "downloadLocation": "NOASSERTION", "filesAnalyzed": False}
         if key.startswith("pkg:"):
             pkg["externalRefs"] = [{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":key}]
+        if meta.get("material_identity")!="conflicted":
+            names={"SHA-256":"SHA256","SHA-384":"SHA384","SHA-512":"SHA512"}
+            hashes={item["algorithm"]:item["value"] for item in meta.get("artifact_hashes",[])}
+            if hashes: pkg["checksums"]=[{"algorithm":names[algorithm],"checksumValue":value} for algorithm,value in sorted(hashes.items())]
         packages.append(pkg)
     relationships = []
     for (parent, child), decision in sorted(result.edges.items()):

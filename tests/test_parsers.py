@@ -19,6 +19,18 @@ class ParserTests(unittest.TestCase):
         p=self._write({"spdxVersion":"SPDX-2.3","packages":[{"SPDXID":"SPDXRef-A","name":"a","versionInfo":"1"},{"SPDXID":"SPDXRef-B","name":"b","versionInfo":"1"}],"relationships":[{"spdxElementId":"SPDXRef-A","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-B"}]})
         g=parse_spdx(p,"x"); self.assertEqual(len(g.edges),1)
 
+    def test_cyclonedx_and_spdx_preserve_strong_hash_provenance(self):
+        digest="a"*64
+        cdx=self._write({"bomFormat":"CycloneDX","components":[{"name":"a","version":"1","purl":"pkg:npm/a@1","hashes":[{"alg":"SHA-256","content":digest}]}]})
+        spdx=self._write({"spdxVersion":"SPDX-2.3","packages":[{"SPDXID":"SPDXRef-A","name":"a","versionInfo":"1","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:npm/a@1"}],"checksums":[{"algorithm":"SHA256","checksumValue":digest}]}]})
+        self.assertEqual(parse_cyclonedx(cdx,"cdx").components["pkg:npm/a@1"]["artifact_hashes"][0]["source_id"],"cdx")
+        self.assertEqual(parse_spdx(spdx,"spdx").components["pkg:npm/a@1"]["artifact_hashes"][0]["algorithm"],"SHA-256")
+
+    def test_invalid_declared_strong_hash_fails_closed(self):
+        path=self._write({"bomFormat":"CycloneDX","components":[{"name":"a","hashes":[{"alg":"SHA-256","content":"not-a-digest"}]}]})
+        with self.assertRaisesRegex(ValueError,"invalid SHA-256"):
+            parse_cyclonedx(path,"bad")
+
     def test_package_lock(self):
         p=self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{"":{"name":"app","version":"1","dependencies":{"left-pad":"1.3.0"}},"node_modules/left-pad":{"version":"1.3.0"}}})
         g=parse_package_lock(p,"x"); self.assertEqual(len(g.edges),1)

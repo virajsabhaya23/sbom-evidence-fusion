@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 from urllib.parse import quote
 
 from packageurl import PackageURL
@@ -127,6 +128,7 @@ def register_component(
         incoming["canonical_purl"] = key if key.startswith("pkg:") else ""
         incoming["identity_aliases"] = sorted(aliases)
         components[key] = incoming
+        _refresh_material_identity(components[key])
         return
 
     if not key.startswith("pkg:"):
@@ -140,3 +142,17 @@ def register_component(
     merged_aliases = set(existing.get("identity_aliases", [])) | aliases
     existing["identity_aliases"] = sorted(merged_aliases)
     existing.setdefault("canonical_purl", key if key.startswith("pkg:") else "")
+    for field in ("artifact_hashes","weak_artifact_hashes"):
+        merged={json.dumps(item,sort_keys=True):item for item in existing.get(field,[])}
+        merged.update({json.dumps(item,sort_keys=True):item for item in incoming.get(field,[])})
+        if merged: existing[field]=[merged[item] for item in sorted(merged)]
+    _refresh_material_identity(existing)
+
+def _refresh_material_identity(component: dict[str,Any]) -> None:
+    by_algorithm: dict[str,set[str]] = {}
+    for item in component.get("artifact_hashes",[]):
+        by_algorithm.setdefault(item["algorithm"],set()).add(item["value"])
+    conflicts={algorithm:sorted(values) for algorithm,values in by_algorithm.items() if len(values)>1}
+    component["material_identity"]="conflicted" if conflicts else "confirmed" if by_algorithm else "unverified"
+    component["artifact_hash_conflicts"]=conflicts
+    component["weak_hash_policy"]="record-only-no-identity-conflict"

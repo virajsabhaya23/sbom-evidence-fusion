@@ -4,6 +4,9 @@ All notable changes will be documented here. This project follows Semantic Versi
 
 ## 0.2.0 - Unreleased
 
+- Preserve CycloneDX/SPDX artifact-hash provenance, quarantine edges around
+  conflicting strong hashes, and round-trip confirmed hashes into repairs.
+
 - Replace unsafe whole-PURL lowercasing with ECMA-427/type-aware parsing and
   canonical serialization through the official Python implementation.
 - Retain original identity aliases and reject ambiguous opaque component-key
