@@ -68,16 +68,28 @@ class FusionResult:
         return out
 
 
+MAVEN_SCOPE_CONTEXTS = {
+    "compile": {"compile", "provided", "system"},
+    "runtime": {"compile", "runtime"},
+    "test": {"compile", "provided", "runtime", "system", "test"},
+}
+
+# npm resolution roles. A peer dependency states a host-compatibility requirement
+# rather than an owned runtime child, so it is never treated as ordinary
+# reachability without an explicit "all" query.
+NPM_ROLE_CONTEXTS = {
+    "compile": {"runtime", "optional", "development"},
+    "runtime": {"runtime", "optional"},
+    "test": {"runtime", "optional", "development"},
+}
+
+
 def _evidence_in_context(item: EdgeEvidence, context: str) -> bool:
-    if item.source_type != "maven-resolution" or not item.relationship.get("scope"):
-        return True
-    scope = item.relationship["scope"]
-    allowed = {
-        "compile": {"compile", "provided", "system"},
-        "runtime": {"compile", "runtime"},
-        "test": {"compile", "provided", "runtime", "system", "test"},
-    }
-    return scope in allowed[context]
+    if item.source_type == "maven-resolution" and item.relationship.get("scope"):
+        return item.relationship["scope"] in MAVEN_SCOPE_CONTEXTS[context]
+    if item.source_type == "npm-lock" and item.relationship.get("role"):
+        return item.relationship["role"] in NPM_ROLE_CONTEXTS[context]
+    return True
 
 
 def fuse(graphs: list[SourceGraph]) -> FusionResult:
@@ -113,18 +125,65 @@ def fuse(graphs: list[SourceGraph]) -> FusionResult:
     return FusionResult(components, decisions, source_summaries, roots)
 
 
+AUTHORITATIVE_SOURCES = {"npm-lock", "pnpm-resolution", "yarn-resolution", "pip-resolution",
+                         "maven-resolution", "poetry-lock", "runtime", "build-graph"}
+
+
 def overall_completeness(result: FusionResult) -> float:
     if not result.components:
         return 0.0
     nondegenerate = [s for s in result.sources if not s["degenerate"]]
     structural = min(1.0, len(result.edges) / max(1, len(result.components) - 1))
     source_factor = min(1.0, len(nondegenerate) / 2.0)
-    authoritative = any(s["source_type"] in {"npm-lock", "pnpm-resolution", "yarn-resolution", "pip-resolution", "maven-resolution", "poetry-lock", "runtime", "build-graph"} and not s["degenerate"] for s in result.sources)
+    authoritative = any(s["source_type"] in AUTHORITATIVE_SOURCES and not s["degenerate"] for s in result.sources)
     auth_factor = 1.0 if authoritative else 0.55
     return round(0.45 * structural + 0.25 * source_factor + 0.30 * auth_factor, 6)
 
 
+def _nodes_with_declared_adjacency(result: FusionResult) -> set[str]:
+    """Nodes whose outgoing dependency set an authoritative resolution source enumerated.
+
+    Context filtering is deliberately not applied: a source that declared a node's
+    dependencies still knows them even when none of them apply to this context.
+    """
+    declared: set[str] = set()
+    for (parent, _), decision in result.edges.items():
+        if any(item.source_type in AUTHORITATIVE_SOURCES for item in decision.evidence):
+            declared.add(parent)
+    return declared
+
+
+def closure_certificate(result: FusionResult, source: str, context: str = "all") -> dict:
+    """Prove (or refuse) that everything reachable from `source` has a known adjacency.
+
+    A graph-wide density score cannot justify a negative security answer: unrelated
+    dense components can mask the fact that the queried subgraph itself is opaque.
+    """
+    adj = result.adjacency_for(context)
+    declared = _nodes_with_declared_adjacency(result)
+    # Only an authoritative parent proves a childless node really has no dependencies.
+    enumerated = {
+        child for (_, child), decision in result.edges.items()
+        if any(item.source_type in AUTHORITATIVE_SOURCES for item in decision.evidence)
+    }
+    visited, frontier, opaque = {source}, [source], []
+    while frontier:
+        node = frontier.pop()
+        if node not in declared and node not in enumerated:
+            opaque.append(node)
+        for nxt in adj.get(node, ()):
+            if nxt not in visited:
+                visited.add(nxt); frontier.append(nxt)
+    return {"source": source, "context": context, "visited": sorted(visited),
+            "opaque_nodes": sorted(opaque), "closed": not opaque}
+
+
 def reachability(result: FusionResult, source: str, target: str, context: str = "all") -> dict:
+    if source not in result.components or target not in result.components:
+        missing = sorted({source, target} - set(result.components))
+        return {"verdict": "unknown", "path": [], "context": context,
+                "completeness": overall_completeness(result),
+                "reason": f"query endpoint(s) absent from the fused graph: {missing}"}
     adj = result.adjacency_for(context)
     q = deque([(source, [source])])
     visited = {source}
@@ -136,6 +195,11 @@ def reachability(result: FusionResult, source: str, target: str, context: str = 
             if nxt not in visited:
                 visited.add(nxt); q.append((nxt, path + [nxt]))
     completeness = overall_completeness(result)
-    if completeness >= 0.85:
-        return {"verdict": "unreachable", "path": [], "context": context, "completeness": completeness}
-    return {"verdict": "unknown", "path": [], "context": context, "completeness": completeness, "reason": "Insufficient dependency evidence for a safe closed-world unreachable conclusion."}
+    certificate = closure_certificate(result, source, context)
+    if certificate["closed"]:
+        return {"verdict": "unreachable", "path": [], "context": context,
+                "completeness": completeness, "closure": certificate}
+    return {"verdict": "unknown", "path": [], "context": context, "completeness": completeness,
+            "closure": certificate,
+            "reason": ("cannot prove unreachable: these nodes reachable from the query source have no "
+                       f"authoritative outgoing dependency evidence: {certificate['opaque_nodes']}")}
