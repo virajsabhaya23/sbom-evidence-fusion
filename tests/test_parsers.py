@@ -1,4 +1,5 @@
-import json, pathlib, tempfile, unittest
+import contextlib, io, json, pathlib, tempfile, unittest
+from sbom_fuse.cli import main
 from sbom_fuse.parsers import parse_cyclonedx, parse_spdx, parse_package_lock, parse_input
 
 class ParserTests(unittest.TestCase):
@@ -34,6 +35,66 @@ class ParserTests(unittest.TestCase):
     def test_package_lock(self):
         p=self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{"":{"name":"app","version":"1","dependencies":{"left-pad":"1.3.0"}},"node_modules/left-pad":{"version":"1.3.0"}}})
         g=parse_package_lock(p,"x"); self.assertEqual(len(g.edges),1)
+
+    def test_unresolved_required_dependency_marks_parent_adjacency_incomplete(self):
+        p=self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{
+            "":{"name":"app","version":"1","dependencies":{"present":"1","missing":"1"}},
+            "node_modules/present":{"version":"1"}}})
+        graph=parse_package_lock(p,"npm")
+        self.assertEqual(graph.edges,{("pkg:npm/app@1","pkg:npm/present@1")})
+        self.assertEqual(graph.incomplete_adjacency,{"pkg:npm/app@1"})
+
+    def test_mixed_resolved_and_unresolved_dependencies_make_cli_reach_unknown(self):
+        p=self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{
+            "":{"name":"app","version":"1","dependencies":{"present":"1","missing":"1"}},
+            "node_modules/present":{"version":"1"},
+            "node_modules/vuln":{"version":"1"}}})
+        with contextlib.redirect_stdout(io.StringIO()):
+            exit_code=main(["reach",str(p),"--from","pkg:npm/app@1",
+                            "--to","pkg:npm/vuln@1","--json"])
+        self.assertEqual(exit_code,2)
+
+    def _roles_lock(self):
+        return self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{
+            "":{"name":"app","version":"1",
+                "dependencies":{"runtime-dep":"1.0.0"},
+                "optionalDependencies":{"fsevents":"2.3.3","absent-optional":"1.0.0"},
+                "devDependencies":{"jest":"29.0.0"},
+                "peerDependencies":{"react":"18.0.0"},
+                "peerDependenciesMeta":{"react":{"optional":False}}},
+            "node_modules/runtime-dep":{"version":"1.0.0"},
+            "node_modules/fsevents":{"version":"2.3.3","optional":True},
+            "node_modules/jest":{"version":"29.0.0","dev":True},
+            "node_modules/react":{"version":"18.0.0","peer":True},
+        }})
+
+    def test_package_lock_preserves_optional_dev_and_peer_roles(self):
+        graph=parse_package_lock(self._roles_lock(),"npm")
+        roles={child.split("/")[-1]:graph.edge_metadata[(parent,child)][0]["role"]
+               for parent,child in graph.edges}
+        self.assertEqual(roles["runtime-dep@1.0.0"],"runtime")
+        self.assertEqual(roles["fsevents@2.3.3"],"optional")
+        self.assertEqual(roles["jest@29.0.0"],"development")
+        self.assertEqual(roles["react@18.0.0"],"peer")
+
+    def test_installed_optional_dependency_keeps_its_parent_edge(self):
+        graph=parse_package_lock(self._roles_lock(),"npm")
+        self.assertIn(("pkg:npm/app@1","pkg:npm/fsevents@2.3.3"),graph.edges)
+
+    def test_omitted_optional_dependency_is_not_a_missing_edge(self):
+        graph=parse_package_lock(self._roles_lock(),"npm")
+        self.assertFalse(any(child.endswith("absent-optional") for _,child in graph.edges))
+        self.assertNotIn("pkg:npm/absent-optional@1.0.0",graph.components)
+        self.assertEqual(graph.incomplete_adjacency,set())
+
+    def test_transitive_dev_dependencies_are_not_installed_edges(self):
+        path=self._write({"name":"app","version":"1","lockfileVersion":3,"packages":{
+            "":{"name":"app","version":"1","dependencies":{"lib":"1.0.0"}},
+            "node_modules/lib":{"version":"1.0.0","devDependencies":{"lib-test-only":"1.0.0"}},
+            "node_modules/lib-test-only":{"version":"1.0.0"},
+        }})
+        graph=parse_package_lock(path,"npm")
+        self.assertNotIn(("pkg:npm/lib@1.0.0","pkg:npm/lib-test-only@1.0.0"),graph.edges)
 
     def test_json_signatures_override_maven_looking_filenames(self):
         fixtures = [

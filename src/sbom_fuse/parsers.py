@@ -95,6 +95,26 @@ def parse_spdx(path: pathlib.Path, source_id: str) -> SourceGraph:
     return graph
 
 
+NPM_ROLE_SECTIONS = (
+    ("dependencies", "runtime"),
+    ("optionalDependencies", "optional"),
+    ("peerDependencies", "peer"),
+    ("devDependencies", "development"),
+)
+
+
+def _npm_resolve(path_to_key: dict[str, str], origin: str, dep_name: str) -> str | None:
+    """npm resolution order: the nearest enclosing node_modules directory wins."""
+    current = origin
+    while True:
+        prefix = f"{current}/node_modules/{dep_name}" if current else f"node_modules/{dep_name}"
+        if prefix in path_to_key:
+            return prefix
+        if not current:
+            return None
+        current = current.rsplit("/node_modules/", 1)[0] if "/node_modules/" in current else ""
+
+
 def parse_package_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
     data = _load(path)
     graph = SourceGraph(source_id=source_id, source_type="npm-lock", metadata={"path": str(path)})
@@ -116,21 +136,43 @@ def parse_package_lock(path: pathlib.Path, source_id: str) -> SourceGraph:
         parent = path_to_key.get(pkg_path)
         if not parent:
             continue
-        for dep_name in (meta.get("dependencies") or {}):
-            candidates = []
-            cur = pkg_path
-            while True:
-                prefix = f"{cur}/node_modules/{dep_name}" if cur else f"node_modules/{dep_name}"
-                candidates.append(prefix)
-                if not cur:
-                    break
-                if "/node_modules/" in cur:
-                    cur = cur.rsplit("/node_modules/", 1)[0]
-                else:
-                    cur = ""
-            child_path = next((x for x in candidates if x in path_to_key), None)
-            if child_path:
+        # An installed entry may itself be dev-only or optional; npm records that on
+        # the resolved package, and it constrains every edge that points at it.
+        for section, role in NPM_ROLE_SECTIONS:
+            # npm only installs devDependencies for the workspace root.
+            if role == "development" and pkg_path != "":
+                continue
+            for dep_name in (meta.get(section) or {}):
+                child_path = _npm_resolve(path_to_key, pkg_path, dep_name)
+                if child_path is None:
+                    # Omitted optional dependencies and optional peers are legitimate
+                    # resolution outcomes; required peers leave adjacency incomplete.
+                    peer_meta = (meta.get("peerDependenciesMeta") or {}).get(dep_name) or {}
+                    if role in {"runtime", "development"} or (
+                        role == "peer" and not peer_meta.get("optional", False)
+                    ):
+                        graph.incomplete_adjacency.add(parent)
+                    continue
+                child_meta = packages.get(child_path, {})
+                effective = role
+                if role == "runtime" and child_meta.get("dev"):
+                    effective = "development"
+                elif role == "runtime" and child_meta.get("optional"):
+                    effective = "optional"
+                relationship = {
+                    "role": effective,
+                    "declared_section": section,
+                    "resolved_path": child_path,
+                    "dev": bool(child_meta.get("dev", False)),
+                    "optional": bool(child_meta.get("optional", False)),
+                    "dev_optional": bool(child_meta.get("devOptional", False)),
+                    "peer": bool(child_meta.get("peer", False)),
+                }
+                if role == "peer":
+                    meta_entry = (meta.get("peerDependenciesMeta") or {}).get(dep_name) or {}
+                    relationship["peer_optional"] = bool(meta_entry.get("optional", False))
                 graph.edges.add((parent, path_to_key[child_path]))
+                graph.edge_metadata.setdefault((parent, path_to_key[child_path]), []).append(relationship)
     return graph
 
 

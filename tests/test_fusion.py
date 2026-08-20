@@ -1,5 +1,5 @@
 import unittest
-from sbom_fuse.fusion import combine_confidence, fuse, graph_quality, reachability
+from sbom_fuse.fusion import combine_confidence, fuse, graph_quality, overall_completeness, reachability
 from sbom_fuse.model import SourceGraph
 from sbom_fuse.exporters import repaired_cyclonedx, repaired_spdx
 
@@ -27,6 +27,56 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(v["verdict"], "reachable")
         self.assertEqual(v["path"], ["a","b","c"])
 
+    # --- query-local closure certificate --------------------------------------
+    @staticmethod
+    def _dense_unrelated(extra_components=None, extra_edges=None):
+        # A large, well-declared subgraph that has nothing to do with the query.
+        components = {f"n{i}": {} for i in range(40)}
+        edges = {(f"n{i}", f"n{i+1}") for i in range(39)}
+        components.update(extra_components or {})
+        edges.update(extra_edges or set())
+        return SourceGraph("lock", "npm-lock", components=components, edges=edges, roots={"n0"})
+
+    def test_dense_unrelated_graph_cannot_justify_unreachable_for_an_opaque_source(self):
+        graph = self._dense_unrelated({"queried": {}, "vuln": {}})
+        result = fuse([graph])
+        self.assertGreaterEqual(overall_completeness(result), 0.85)
+        verdict = reachability(result, "queried", "vuln")
+        self.assertEqual(verdict["verdict"], "unknown")
+        self.assertIn("queried", verdict["closure"]["opaque_nodes"])
+
+    def test_fully_declared_query_subgraph_returns_unreachable_with_a_certificate(self):
+        graph = self._dense_unrelated({"queried": {}, "child": {}, "vuln": {}}, {("queried", "child")})
+        verdict = reachability(fuse([graph]), "queried", "vuln")
+        self.assertEqual(verdict["verdict"], "unreachable")
+        self.assertTrue(verdict["closure"]["closed"])
+        self.assertEqual(verdict["closure"]["opaque_nodes"], [])
+        self.assertEqual(verdict["closure"]["visited"], ["child", "queried"])
+
+    def test_incomplete_authoritative_adjacency_refuses_unreachable(self):
+        graph = self._dense_unrelated(
+            {"queried": {}, "resolved": {}, "vuln": {}},
+            {("queried", "resolved")},
+        )
+        graph.incomplete_adjacency.add("queried")
+        verdict = reachability(fuse([graph]), "queried", "vuln")
+        self.assertEqual(verdict["verdict"], "unknown")
+        self.assertIn("queried", verdict["closure"]["opaque_nodes"])
+        self.assertEqual(verdict["closure"]["incomplete_adjacency"], ["queried"])
+
+    def test_an_opaque_intermediate_blocks_a_negative_verdict(self):
+        graph = self._dense_unrelated({"queried": {}, "mid": {}, "vuln": {}}, {("queried", "mid")})
+        sbom = SourceGraph("cdx", "cyclonedx", components={"mid": {}, "loose": {}}, edges={("mid", "loose")})
+        verdict = reachability(fuse([graph, sbom]), "queried", "vuln")
+        self.assertEqual(verdict["verdict"], "unknown")
+        self.assertIn("loose", verdict["closure"]["opaque_nodes"])
+
+    def test_absent_query_endpoints_never_produce_a_positive_or_negative_verdict(self):
+        result = fuse([self._dense_unrelated()])
+        for source, target in (("ghost", "ghost"), ("n0", "ghost"), ("ghost", "n1")):
+            with self.subTest(source=source, target=target):
+                self.assertEqual(reachability(result, source, target)["verdict"], "unknown")
+
     def test_maven_reachability_respects_context(self):
         edge=("pkg:maven/a/app@1","pkg:maven/a/helper@1")
         graph=SourceGraph("maven","maven-resolution",components={edge[0]:{},edge[1]:{}},edges={edge},roots={edge[0]},edge_metadata={edge:[{"scope":"test","optional":False}]})
@@ -34,6 +84,21 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(reachability(result,*edge,context="runtime")["verdict"],"unreachable")
         self.assertEqual(reachability(result,*edge,context="test")["verdict"],"reachable")
         self.assertEqual(result.edges[edge].evidence[0].relationship["scope"],"test")
+
+    def test_npm_reachability_respects_resolution_role(self):
+        expected={
+            "runtime":{"runtime":True,"optional":True,"development":False,"peer":False},
+            "test":{"runtime":True,"optional":True,"development":True,"peer":False},
+            "all":{"runtime":True,"optional":True,"development":True,"peer":True},
+        }
+        for context,roles in expected.items():
+            for role,reachable in roles.items():
+                with self.subTest(context=context,role=role):
+                    edge=("pkg:npm/app@1",f"pkg:npm/{role}-child@1")
+                    graph=SourceGraph("lock","npm-lock",components={edge[0]:{},edge[1]:{}},edges={edge},
+                                      roots={edge[0]},edge_metadata={edge:[{"role":role}]})
+                    verdict=reachability(fuse([graph]),*edge,context=context)["verdict"]
+                    self.assertEqual(verdict=="reachable",reachable)
 
     def test_relationship_variants_do_not_inflate_source_confidence(self):
         edge=("a","b")
